@@ -1,0 +1,9 @@
+.venv/
+venv/
+__pycache__/
+.streamlit/secrets.toml
+data/freshcheck.db
+data/fruit_dataset/
+models/*.keras
+models/*.joblib
+*.pyc
