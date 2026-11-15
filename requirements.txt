@@ -1,7 +1,8 @@
-streamlit>=1.35
-numpy>=1.26
-Pillow>=10.0
-scikit-learn>=1.4
-joblib>=1.3
-tensorflow>=2.15
-openai>=1.30
+
+streamlit
+tensorflow==2.21.0
+numpy
+pillow
+requests
+joblib
+scikit-learn
