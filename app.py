@@ -1,50 +1,30 @@
 
-"""
-FRESHCHECK AI
----------------
-Deep Learning : Fruit freshness image classification
-Machine Learning: Spoilage-risk demonstration
-Generative AI : OpenRouter-powered food assistant
-Database       : SQLite food inventory
-Analytics      : Inventory reports and CSV export
-
-IMPORTANT:
-- CNN confidence is not a food-safety probability.
-- Risk model uses synthetic proxy labels, not validated spoilage data.
-- Image analysis cannot detect invisible pathogens or toxins.
-"""
-
-import csv
+from pathlib import Path
+from datetime import date, datetime
 import hashlib
 import io
-import json
 import os
 import sqlite3
-import urllib.error
-import urllib.request
-from datetime import date, timedelta
-from pathlib import Path
+import csv
 
 import numpy as np
+import requests
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 # ============================================================
 # 1. APP CONFIGURATION
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent
 
-DATA_DIR = BASE_DIR / "data"
-MODEL_DIR = BASE_DIR / "models"
-
-DB_PATH = DATA_DIR / "freshcheck.db"
+MODEL_DIR = ROOT / "models"
 CNN_PATH = MODEL_DIR / "freshness_cnn.keras"
 RISK_PATH = MODEL_DIR / "spoilage_risk.joblib"
+DB_PATH = ROOT / "freshcheck_inventory.db"
 
-DATA_DIR.mkdir(exist_ok=True)
-MODEL_DIR.mkdir(exist_ok=True)
+IMG_SIZE = (224, 224)
 
 st.set_page_config(
     page_title="FreshCheck AI",
@@ -52,462 +32,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-
-# ============================================================
-# 2. LIGHT AND CLEAN APP DESIGN
-# ============================================================
-
-st.markdown(
-    """
-    <style>
-
-    /* Main application background */
-    .stApp {
-        background: linear-gradient(
-            135deg,
-            #f5fbf8 0%,
-            #f8fafc 55%,
-            #fffaf2 100%
-        );
-        color: #263b35;
-    }
-
-    /* Main content width */
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-        max-width: 1250px;
-    }
-
-    /* Sidebar */
-    section[data-testid="stSidebar"] {
-        background: #edf6f1;
-        border-right: 1px solid #dcebe3;
-    }
-
-    section[data-testid="stSidebar"] * {
-        color: #29483d;
-    }
-
-    /* Headings */
-    h1, h2, h3 {
-        color: #294d40 !important;
-        font-weight: 600 !important;
-        letter-spacing: -0.4px;
-    }
-
-    /* Paragraphs */
-    p, label {
-        color: #52665f;
-    }
-
-    /* Cards */
-    div[data-testid="stMetric"],
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        background-color: rgba(255,255,255,0.82);
-        border: 1px solid #e1ece6;
-        border-radius: 14px;
-        padding: 12px;
-    }
-
-    /* Buttons */
-    .stButton > button,
-    .stDownloadButton > button {
-        background-color: #dcefe5;
-        color: #285340;
-        border: 1px solid #c5e1d1;
-        border-radius: 10px;
-        padding: 0.55rem 1.1rem;
-        font-weight: 500;
-        transition: 0.2s ease;
-    }
-
-    .stButton > button:hover,
-    .stDownloadButton > button:hover {
-        background-color: #cce7d8;
-        border-color: #a9d4bd;
-        color: #214b38;
-    }
-
-    /* Primary buttons */
-    .stButton > button[kind="primary"] {
-        background-color: #4d9976;
-        color: white;
-        border: none;
-    }
-
-    .stButton > button[kind="primary"]:hover {
-        background-color: #3c805f;
-        color: white;
-    }
-
-    /* Input fields */
-    input, textarea {
-        border-radius: 8px !important;
-    }
-
-    /* File uploader */
-    section[data-testid="stFileUploader"] {
-        background: rgba(255,255,255,0.7);
-        border: 1px dashed #b9d8c7;
-        border-radius: 12px;
-        padding: 12px;
-    }
-
-    /* Alerts */
-    div[data-testid="stAlert"] {
-        border-radius: 10px;
-    }
-
-    /* Horizontal divider */
-    hr {
-        border-color: #e0ebe5;
-    }
-
-    /* Progress bars */
-    div[data-testid="stProgressBar"] > div > div {
-        background-color: #6eae8b;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-
-# ============================================================
-# 3. HEADER
-# ============================================================
-
-st.markdown(
-    """
-    <div style="
-        padding: 24px 28px;
-        background: linear-gradient(110deg, #e5f4eb, #eef5fb);
-        border: 1px solid #dcebe4;
-        border-radius: 18px;
-        margin-bottom: 22px;
-    ">
-        <div style="font-size: 36px;">🍎 FreshCheck AI</div>
-        <div style="
-            color: #59736a;
-            font-size: 16px;
-            margin-top: 6px;
-        ">
-            Smarter food freshness insights, storage guidance
-            and inventory management.
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-st.warning(
-    "FreshCheck AI is an educational prototype. It cannot certify "
-    "food safety or detect invisible pathogens, toxins or contamination."
-)
-
-
-# ============================================================
-# 4. OPENROUTER CONFIGURATION
-# ============================================================
-
-def read_secret_or_environment(name, default=""):
-    """
-    Read configuration from Streamlit secrets.
-    If unavailable, try the Windows environment variable.
-    """
-
-    value = None
-
-    try:
-        value = st.secrets.get(name)
-    except Exception:
-        value = None
-
-    if value is None or not str(value).strip():
-        value = os.getenv(name, default)
-
-    return str(value).strip() if value is not None else default
-
-
-def get_openrouter_config():
-
-    api_key = read_secret_or_environment(
-        "OPENROUTER_API_KEY"
-    )
-
-    model = read_secret_or_environment(
-        "OPENROUTER_MODEL",
-        "openai/gpt-4o-mini"
-    )
-
-    return api_key, model
-
-
-# ============================================================
-# 5. OPENROUTER API CONNECTION
-#    No OpenAI SDK. No jiter. Uses Python urllib.
-# ============================================================
-
-def call_openrouter(
-    prompt,
-    system_prompt=None,
-    max_tokens=800
-):
-
-    api_key, model = get_openrouter_config()
-
-    if not api_key:
-        return None, (
-            "OPENROUTER_API_KEY is missing. "
-            "Check your .streamlit/secrets.toml file."
-        )
-
-    if not model:
-        return None, "OPENROUTER_MODEL is missing."
-
-    url = "https://openrouter.ai/api/v1/chat/completions"
-
-    system_message = system_prompt or (
-        "You are FreshCheck AI, an intelligent food-storage "
-        "and food-waste reduction assistant. "
-        "Give accurate, clear and practical explanations. "
-        "Use simple language where possible. "
-        "Never claim that a CNN image prediction can certify "
-        "food safety or detect invisible pathogens. "
-        "Explain limitations whenever relevant."
-    )
-
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_message
-            },
-            {
-                "role": "user",
-                "content": str(prompt)
-            }
-        ],
-        "temperature": 0.3,
-        "max_tokens": int(max_tokens)
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:8501",
-        "X-Title": "FreshCheck AI"
-    }
-
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST"
-    )
-
-    try:
-
-        with urllib.request.urlopen(
-            request,
-            timeout=90
-        ) as response:
-
-            response_data = response.read().decode("utf-8")
-            result = json.loads(response_data)
-
-        answer = result["choices"][0]["message"]["content"]
-
-        if isinstance(answer, list):
-            answer = "\n".join(
-                item.get("text", "")
-                for item in answer
-                if isinstance(item, dict)
-            )
-
-        if not answer or not str(answer).strip():
-            return None, "OpenRouter returned an empty response."
-
-        return str(answer).strip(), None
-
-    except urllib.error.HTTPError as error:
-
-        error_body = error.read().decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        try:
-            error_json = json.loads(error_body)
-            details = error_json.get(
-                "error", {}
-            ).get("message", error_body)
-        except Exception:
-            details = error_body
-
-        if error.code == 401:
-            return None, (
-                "OpenRouter authentication failed. "
-                "Check your API key and generate a replacement "
-                "if the old key was revoked."
-            )
-
-        if error.code == 402:
-            return None, (
-                "OpenRouter account has insufficient credits "
-                "or a payment issue."
-            )
-
-        if error.code == 403:
-            return None, (
-                "OpenRouter access denied. Check your account "
-                "permissions and model access."
-            )
-
-        if error.code == 404:
-            return None, (
-                f"Model not found or unavailable: {model}. "
-                "Check the model ID."
-            )
-
-        if error.code == 429:
-            return None, (
-                "OpenRouter rate limit reached. "
-                "Wait and try again."
-            )
-
-        return None, (
-            f"OpenRouter HTTP error {error.code}: {details}"
-        )
-
-    except urllib.error.URLError as error:
-
-        return None, f"Network connection failed: {error.reason}"
-
-    except (KeyError, IndexError, TypeError, ValueError) as error:
-
-        return None, f"Invalid OpenRouter response: {error}"
-
-    except Exception as error:
-
-        return None, f"GenAI request failed: {error}"
-
-
-def test_openrouter_connection():
-
-    return call_openrouter(
-        "Reply with exactly: FreshCheck AI connection successful.",
-        system_prompt=(
-            "You are a connection test assistant. "
-            "Reply with the requested short confirmation."
-        ),
-        max_tokens=40
-    )
-
-
-# ============================================================
-# 6. SQLITE DATABASE
-# ============================================================
-
-def get_db_connection():
-
-    connection = sqlite3.connect(DB_PATH)
-
-    connection.row_factory = sqlite3.Row
-
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            food TEXT NOT NULL,
-            quantity REAL NOT NULL,
-            unit TEXT NOT NULL,
-            purchase_date TEXT NOT NULL,
-            expiry_date TEXT NOT NULL,
-            storage TEXT,
-            notes TEXT
-        )
-        """
-    )
-
-    connection.commit()
-
-    return connection
-
-
-def fetch_inventory():
-
-    with get_db_connection() as connection:
-
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM inventory
-            ORDER BY expiry_date ASC
-            """
-        ).fetchall()
-
-    return [dict(row) for row in rows]
-
-
-def add_inventory_item(
-    food,
-    quantity,
-    unit,
-    purchase_date,
-    expiry_date,
-    storage,
-    notes
-):
-
-    with get_db_connection() as connection:
-
-        connection.execute(
-            """
-            INSERT INTO inventory (
-                food,
-                quantity,
-                unit,
-                purchase_date,
-                expiry_date,
-                storage,
-                notes
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                food.strip(),
-                float(quantity),
-                unit,
-                purchase_date.isoformat(),
-                expiry_date.isoformat(),
-                storage,
-                notes.strip()
-            )
-        )
-
-        connection.commit()
-
-
-def delete_inventory_item(item_id):
-
-    with get_db_connection() as connection:
-
-        connection.execute(
-            "DELETE FROM inventory WHERE id = ?",
-            (int(item_id),)
-        )
-
-        connection.commit()
-
-
-# ============================================================
-# 7. LOAD CNN MODEL
-# ============================================================
 
 CLASSES = [
     "freshapples",
@@ -527,219 +51,523 @@ CLASS_DETAILS = {
     "rottenoranges": ("Oranges", "Rotten-looking")
 }
 
+FRUIT_CODES = {
+    "Apple": 0,
+    "Banana": 1,
+    "Orange": 2
+}
 
-@st.cache_resource
-def load_cnn_model():
 
-    if not CNN_PATH.exists():
-        return None, f"CNN model not found: {CNN_PATH}"
+# ============================================================
+# 2. CUSTOM CSS
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    .main {
+        background-color: #f7f9fc;
+    }
+
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+    }
+
+    .main-title {
+        font-size: 2.3rem;
+        font-weight: 800;
+        color: #176b45;
+        margin-bottom: 0.2rem;
+    }
+
+    .subtitle {
+        color: #5c6670;
+        font-size: 1rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .info-card {
+        background: white;
+        padding: 18px;
+        border-radius: 12px;
+        border: 1px solid #e5e9ef;
+        margin-bottom: 12px;
+    }
+
+    .small-note {
+        color: #667085;
+        font-size: 0.85rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# ============================================================
+# 3. MODEL FILE VERIFICATION
+# ============================================================
+
+def get_file_hash(path):
+    """Return SHA256 hash of a model file."""
+
+    sha = hashlib.sha256()
+
+    with open(path, "rb") as file:
+        for chunk in iter(
+            lambda: file.read(1024 * 1024),
+            b""
+        ):
+            sha.update(chunk)
+
+    return sha.hexdigest()
+
+
+def get_model_fingerprint(path):
+    """
+    Create a fingerprint for Streamlit caching.
+    If the model file changes, the cache key changes too.
+    """
+
+    if not path.exists():
+        return "missing"
+
+    return get_file_hash(path)
+
+
+# ============================================================
+# 4. LOAD CNN MODEL
+# ============================================================
+
+@st.cache_resource(show_spinner="Loading fruit freshness model...")
+def load_cnn_model(model_path, fingerprint):
+
+    if not Path(model_path).exists():
+        return None, f"CNN model not found: {model_path}"
 
     try:
-
         import tensorflow as tf
 
-        model = tf.keras.models.load_model(CNN_PATH)
+        model = tf.keras.models.load_model(
+            model_path,
+            compile=False
+        )
 
         if model.output_shape[-1] != len(CLASSES):
             return None, (
-                "CNN output does not match the six expected classes."
+                "CNN output does not match the six expected classes. "
+                f"Expected {len(CLASSES)}, "
+                f"received {model.output_shape[-1]}."
+            )
+
+        if len(model.input_shape) != 4:
+            return None, "Unexpected CNN input shape."
+
+        if model.input_shape[-1] != 3:
+            return None, (
+                "The CNN model is not configured for RGB images."
             )
 
         return model, None
 
     except Exception as error:
-
         return None, f"CNN loading failed: {error}"
 
 
-@st.cache_resource
-def load_risk_model():
+# ============================================================
+# 5. LOAD SPOILAGE RISK MODEL
+# ============================================================
 
-    if not RISK_PATH.exists():
-        return None, f"Risk model not found: {RISK_PATH}"
+@st.cache_resource(show_spinner="Loading spoilage-risk model...")
+def load_risk_model(model_path, fingerprint):
+
+    if not Path(model_path).exists():
+        return None, f"Risk model not found: {model_path}"
 
     try:
-
         import joblib
 
-        model = joblib.load(RISK_PATH)
+        model = joblib.load(model_path)
 
         return model, None
 
     except Exception as error:
-
         return None, f"Risk model loading failed: {error}"
 
 
-cnn, cnn_error = load_cnn_model()
-risk_model, risk_error = load_risk_model()
+cnn_fingerprint = get_model_fingerprint(CNN_PATH)
+risk_fingerprint = get_model_fingerprint(RISK_PATH)
+
+cnn, cnn_error = load_cnn_model(
+    str(CNN_PATH),
+    cnn_fingerprint
+)
+
+risk_model, risk_error = load_risk_model(
+    str(RISK_PATH),
+    risk_fingerprint
+)
 
 
 # ============================================================
-# 8. CNN IMAGE PREDICTION
+# 6. CNN IMAGE PREDICTION
 # ============================================================
 
-def predict_image(image):
+def predict_image(uploaded_image):
 
     if cnn is None:
         raise RuntimeError(
             cnn_error or "CNN model is unavailable."
         )
 
-    image = image.convert("RGB").resize((224, 224))
+    # Correct image orientation and RGB conversion
+    image = ImageOps.exif_transpose(uploaded_image)
+    image = image.convert("RGB")
+    image = image.resize(IMG_SIZE)
 
     # IMPORTANT:
-    # Your trained model already contains Rescaling(1./255).
-    # Therefore, DO NOT divide this input by 255 again.
+    # Your trained CNN already contains Rescaling(1./255).
+    # Therefore, do NOT divide this array by 255 again.
 
-    array = np.asarray(
+    image_array = np.asarray(
         image,
         dtype=np.float32
     )
 
+    if image_array.shape != (224, 224, 3):
+        raise ValueError(
+            f"Unexpected image shape: {image_array.shape}"
+        )
+
     predictions = cnn.predict(
-        np.expand_dims(array, axis=0),
+        np.expand_dims(image_array, axis=0),
         verbose=0
     )[0]
 
     if len(predictions) != len(CLASSES):
-        raise ValueError("Unexpected CNN output dimensions.")
+        raise ValueError(
+            "Unexpected CNN output dimensions."
+        )
 
-    index = int(np.argmax(predictions))
+    predicted_index = int(np.argmax(predictions))
+    predicted_class = CLASSES[predicted_index]
 
-    class_name = CLASSES[index]
-
-    fruit, condition = CLASS_DETAILS[class_name]
+    fruit, condition = CLASS_DETAILS[predicted_class]
 
     score_list = []
 
-    for i, label in enumerate(CLASSES):
+    for index, class_name in enumerate(CLASSES):
 
-        score_fruit, score_condition = CLASS_DETAILS[label]
+        score_fruit, score_condition = CLASS_DETAILS[class_name]
 
         score_list.append({
             "label": f"{score_fruit} — {score_condition}",
-            "probability": float(predictions[i])
+            "probability": float(predictions[index])
         })
 
     return {
-        "class_name": class_name,
+        "class_name": predicted_class,
         "fruit": fruit,
         "condition": condition,
-        "confidence": float(predictions[index]),
+        "confidence": float(predictions[predicted_index]),
         "scores": score_list
     }
 
 
 # ============================================================
-# 9. RANDOM FOREST RISK ESTIMATION
+# 7. SPOILAGE RISK PREDICTION
 # ============================================================
 
-def estimate_spoilage_risk(
-    food,
-    days,
+def predict_spoilage_risk(
+    fruit,
+    days_since_purchase,
     temperature,
     humidity
 ):
 
     if risk_model is None:
-        return None, risk_error or "Risk model unavailable."
+        raise RuntimeError(
+            risk_error or "Risk model is unavailable."
+        )
 
-    fruit_codes = {
-        "apple": 0,
-        "banana": 1,
-        "orange": 2
+    fruit_code = FRUIT_CODES[fruit]
+
+    features = np.array([[
+        fruit_code,
+        days_since_purchase,
+        temperature,
+        humidity
+    ]], dtype=np.float64)
+
+    probabilities = risk_model.predict_proba(features)[0]
+    model_classes = list(risk_model.classes_)
+
+    if 1 in model_classes:
+        risk_index = model_classes.index(1)
+    else:
+        risk_index = int(np.argmax(probabilities))
+
+    risk_probability = float(probabilities[risk_index])
+
+    if risk_probability < 0.35:
+        risk_level = "Low"
+        explanation = "The model estimates a relatively low risk."
+    elif risk_probability < 0.70:
+        risk_level = "Moderate"
+        explanation = "The model estimates a moderate risk."
+    else:
+        risk_level = "High"
+        explanation = "The model estimates a relatively high risk."
+
+    return {
+        "probability": risk_probability,
+        "level": risk_level,
+        "explanation": explanation
     }
 
-    features = [[
-        fruit_codes[food.lower()],
-        float(days),
-        float(temperature),
-        float(humidity)
-    ]]
+
+# ============================================================
+# 8. SQLITE INVENTORY DATABASE
+# ============================================================
+
+def get_connection():
+    return sqlite3.connect(DB_PATH)
+
+
+def initialize_database():
+
+    connection = get_connection()
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fruit TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            purchase_date TEXT NOT NULL,
+            expiry_date TEXT NOT NULL,
+            notes TEXT
+        )
+        """
+    )
+
+    connection.commit()
+    connection.close()
+
+
+def add_inventory_item(
+    fruit,
+    quantity,
+    purchase_date,
+    expiry_date,
+    notes
+):
+
+    connection = get_connection()
+
+    connection.execute(
+        """
+        INSERT INTO inventory
+        (fruit, quantity, purchase_date, expiry_date, notes)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            fruit,
+            quantity,
+            purchase_date.isoformat(),
+            expiry_date.isoformat(),
+            notes
+        )
+    )
+
+    connection.commit()
+    connection.close()
+
+
+def get_inventory():
+
+    connection = get_connection()
+
+    cursor = connection.execute(
+        """
+        SELECT id, fruit, quantity, purchase_date, expiry_date, notes
+        FROM inventory
+        ORDER BY expiry_date ASC
+        """
+    )
+
+    rows = cursor.fetchall()
+    connection.close()
+
+    columns = [
+        "ID",
+        "Fruit",
+        "Quantity",
+        "Purchase Date",
+        "Expiry Date",
+        "Notes"
+    ]
+
+    return [
+        dict(zip(columns, row))
+        for row in rows
+    ]
+
+
+def delete_inventory_item(item_id):
+
+    connection = get_connection()
+
+    connection.execute(
+        "DELETE FROM inventory WHERE id = ?",
+        (item_id,)
+    )
+
+    connection.commit()
+    connection.close()
+
+
+initialize_database()
+
+
+# ============================================================
+# 9. OPENROUTER GENAI ASSISTANT
+# ============================================================
+
+def get_openrouter_settings():
+
+    api_key = None
+    model_name = "openai/gpt-4o-mini"
 
     try:
+        api_key = st.secrets.get("OPENROUTER_API_KEY")
+        model_name = st.secrets.get(
+            "OPENROUTER_MODEL",
+            model_name
+        )
+    except Exception:
+        pass
 
-        probabilities = risk_model.predict_proba(features)[0]
+    if not api_key:
+        api_key = os.getenv("OPENROUTER_API_KEY")
 
-        model_classes = list(risk_model.classes_)
+    if not os.getenv("OPENROUTER_MODEL"):
+        model_name = os.getenv(
+            "OPENROUTER_MODEL",
+            model_name
+        )
 
-        if 1 not in model_classes:
-            return None, "Risk model does not contain class 1."
+    return api_key, model_name
 
-        positive_index = model_classes.index(1)
 
-        score = float(probabilities[positive_index])
+def ask_openrouter(question, chat_history):
 
-        return score, None
+    api_key, model_name = get_openrouter_settings()
 
-    except Exception as error:
+    if not api_key:
+        raise RuntimeError(
+            "OpenRouter API key is not configured. "
+            "Add OPENROUTER_API_KEY in Streamlit Cloud Secrets."
+        )
 
-        return None, f"Risk prediction failed: {error}"
+    system_prompt = """
+You are FreshCheck AI, a helpful food freshness and storage assistant.
+
+Your responsibilities:
+1. Answer questions about fruit storage and food freshness.
+2. Explain common visible signs of fruit spoilage.
+3. Give practical food storage recommendations.
+4. Explain how temperature and humidity can affect fruit storage.
+5. Use simple language suitable for students and general users.
+
+Important safety rules:
+- Never claim that an image can prove food is safe to eat.
+- Visible appearance cannot detect all harmful microorganisms.
+- If food has mold, unusual odor, sliminess, leakage, or other clear
+  signs of spoilage, advise the user not to consume it.
+- Do not present the application's ML risk estimate as a validated
+  food-safety measurement.
+- If uncertain, clearly say so.
+"""
+
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        }
+    ]
+
+    for message in chat_history[-8:]:
+        messages.append(message)
+
+    messages.append({
+        "role": "user",
+        "content": question
+    })
+
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://freshcheck-ai.streamlit.app",
+            "X-Title": "FreshCheck AI"
+        },
+        json={
+            "model": model_name,
+            "messages": messages,
+            "temperature": 0.4,
+            "max_tokens": 900
+        },
+        timeout=60
+    )
+
+    if response.status_code != 200:
+        try:
+            error_details = response.json()
+        except Exception:
+            error_details = response.text
+
+        raise RuntimeError(
+            f"OpenRouter error ({response.status_code}): "
+            f"{error_details}"
+        )
+
+    result = response.json()
+
+    return result["choices"][0]["message"]["content"]
 
 
 # ============================================================
 # 10. SIDEBAR NAVIGATION
 # ============================================================
 
-st.sidebar.markdown("## 🍃 FreshCheck AI")
+st.sidebar.title("🍎 FreshCheck AI")
 
 st.sidebar.caption(
-    "Food quality insights powered by AI"
+    "AI-powered fruit freshness and storage assistant"
 )
 
-pages = [
-    "Home",
-    "Freshness Scanner",
-    "Food Inventory",
-    "AI Food Assistant",
-    "Analytics & Reports",
-    "About & Setup"
-]
-
 page = st.sidebar.radio(
-    "Explore",
-    pages
+    "Navigation",
+    [
+        "Home",
+        "Freshness Scanner",
+        "Spoilage Risk Estimator",
+        "GenAI Food Assistant",
+        "Fruit Inventory",
+        "Analytics",
+        "Model Information"
+    ]
 )
 
 st.sidebar.divider()
 
-api_key, model_name = get_openrouter_config()
-
-if api_key:
-
-    st.sidebar.success(
-        f"OpenRouter key detected\n\nModel: {model_name}"
-    )
-
-else:
-
-    st.sidebar.error(
-        "OpenRouter API key not configured."
-    )
-
-if st.sidebar.button("Test OpenRouter connection"):
-
-    with st.sidebar:
-        with st.spinner("Testing OpenRouter..."):
-
-            test_answer, test_error = test_openrouter_connection()
-
-        if test_error:
-            st.error(test_error)
-        else:
-            st.success("OpenRouter connection successful!")
-
-
-if cnn is None:
-    st.sidebar.warning("CNN model unavailable.")
-else:
-    st.sidebar.success("CNN model loaded.")
-
-if risk_model is None:
-    st.sidebar.warning("Risk model unavailable.")
-else:
-    st.sidebar.success("Risk model loaded.")
+st.sidebar.caption(
+    "FreshCheck AI is an educational prototype. "
+    "It does not certify food safety."
+)
 
 
 # ============================================================
@@ -748,128 +576,123 @@ else:
 
 if page == "Home":
 
-    st.subheader("Welcome to FreshCheck AI")
-
-    st.write(
-        "An intelligent food management application combining "
-        "Deep Learning, Machine Learning and Generative AI."
+    st.markdown(
+        '<div class="main-title">🍎 FreshCheck AI</div>',
+        unsafe_allow_html=True
     )
 
-    inventory = fetch_inventory()
+    st.markdown(
+        '<div class="subtitle">'
+        'An intelligent fruit freshness and storage assistant '
+        'powered by Deep Learning, Machine Learning and Generative AI.'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    inventory = get_inventory()
+
+    total_items = sum(
+        item["Quantity"] for item in inventory
+    )
 
     today = date.today()
 
-    expiring_count = 0
+    expiring_items = 0
 
     for item in inventory:
+        try:
+            expiry = date.fromisoformat(item["Expiry Date"])
 
-        expiry = date.fromisoformat(item["expiry_date"])
+            if expiry <= today:
+                expiring_items += 1
 
-        if today <= expiry <= today + timedelta(days=3):
-            expiring_count += 1
+        except ValueError:
+            pass
 
     col1, col2, col3 = st.columns(3)
 
     col1.metric(
-        "Inventory items",
+        "Inventory Entries",
         len(inventory)
     )
 
     col2.metric(
-        "Expiring within 3 days",
-        expiring_count
+        "Total Fruit Quantity",
+        total_items
     )
 
     col3.metric(
-        "CNN model",
-        "Ready" if cnn is not None else "Unavailable"
+        "Expired / Due Today",
+        expiring_items
     )
 
     st.divider()
 
-    st.markdown("### Explore the application")
+    st.subheader("Explore FreshCheck AI")
 
-    c1, c2 = st.columns(2)
+    card1, card2 = st.columns(2)
 
-    with c1:
-
+    with card1:
         st.markdown(
             """
-            <div style="
-                background:#edf7f0;
-                border:1px solid #d8eadf;
-                border-radius:14px;
-                padding:20px;
-                min-height:155px;
-            ">
-                <div style="font-size:27px;">📷</div>
-                <h3>Freshness Scanner</h3>
-                <p>Upload fruit images and receive CNN-based
-                visual classification results.</p>
+            <div class="info-card">
+                <h3>📷 Freshness Scanner</h3>
+                Upload a fruit image and classify it as
+                fresh-looking or rotten-looking using a CNN.
             </div>
             """,
             unsafe_allow_html=True
         )
 
-        st.write("")
-
         st.markdown(
             """
-            <div style="
-                background:#f1f5fc;
-                border:1px solid #dce5f3;
-                border-radius:14px;
-                padding:20px;
-                min-height:155px;
-            ">
-                <div style="font-size:27px;">🤖</div>
-                <h3>Generative AI Assistant</h3>
-                <p>Ask food-storage questions and receive
-                AI-generated explanations through OpenRouter.</p>
+            <div class="info-card">
+                <h3>🤖 GenAI Food Assistant</h3>
+                Ask questions about fruit storage,
+                freshness and food handling.
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    with c2:
-
+    with card2:
         st.markdown(
             """
-            <div style="
-                background:#fff7eb;
-                border:1px solid #f0e5d2;
-                border-radius:14px;
-                padding:20px;
-                min-height:155px;
-            ">
-                <div style="font-size:27px;">🧺</div>
-                <h3>Food Inventory</h3>
-                <p>Track food quantities, purchase dates
-                and expiry dates.</p>
+            <div class="info-card">
+                <h3>📊 Spoilage Risk Estimator</h3>
+                Explore an ML-based risk estimate using
+                fruit type, storage duration, temperature
+                and humidity.
             </div>
             """,
             unsafe_allow_html=True
         )
 
-        st.write("")
-
         st.markdown(
             """
-            <div style="
-                background:#f5f0fa;
-                border:1px solid #e6dcef;
-                border-radius:14px;
-                padding:20px;
-                min-height:155px;
-            ">
-                <div style="font-size:27px;">📊</div>
-                <h3>Analytics & Reports</h3>
-                <p>Review inventory information and
-                download CSV reports.</p>
+            <div class="info-card">
+                <h3>📦 Fruit Inventory</h3>
+                Record fruit purchases and expiry dates
+                and monitor your inventory.
             </div>
             """,
             unsafe_allow_html=True
         )
+
+    st.divider()
+
+    st.subheader("How the system works")
+
+    st.markdown(
+        """
+        1. **Deep Learning:** A CNN analyses an uploaded fruit image.
+        2. **Machine Learning:** A Random Forest model estimates a
+           spoilage-risk probability from storage-related inputs.
+        3. **Generative AI:** OpenRouter provides conversational
+           food-storage guidance.
+        4. **Database:** SQLite stores inventory and expiry details.
+        """
+    )
 
 
 # ============================================================
@@ -878,37 +701,33 @@ if page == "Home":
 
 elif page == "Freshness Scanner":
 
-    st.subheader("Fruit Freshness Scanner")
+    st.title("📷 Fruit Freshness Scanner")
 
     st.write(
-        "Upload a clear image containing one apple, banana or orange."
+        "Upload an image of an apple, banana or orange. "
+        "The CNN will predict its visible freshness category."
     )
 
     if cnn is None:
-
         st.error(cnn_error)
+
+        st.info(
+            "Check that models/freshness_cnn.keras exists "
+            "in your GitHub repository."
+        )
 
     else:
 
         uploaded_file = st.file_uploader(
-            "Upload fruit image",
-            type=["jpg", "jpeg", "png", "webp"],
-            key="fruit_image"
+            "Upload a fruit image",
+            type=["jpg", "jpeg", "png", "webp"]
         )
 
         if uploaded_file is not None:
 
             try:
-
-                image_bytes = uploaded_file.getvalue()
-
-                image_id = hashlib.sha256(
-                    image_bytes
-                ).hexdigest()
-
-                image = Image.open(
-                    io.BytesIO(image_bytes)
-                ).convert("RGB")
+                image = Image.open(uploaded_file)
+                image = ImageOps.exif_transpose(image).convert("RGB")
 
                 st.image(
                     image,
@@ -916,244 +735,298 @@ elif page == "Freshness Scanner":
                     width=350
                 )
 
-                if st.session_state.get("scan_image_id") != image_id:
-
-                    st.session_state["scan_image_id"] = image_id
-
-                    st.session_state.pop(
-                        "scan_result",
-                        None
-                    )
-
                 if st.button(
-                    "Analyze image",
+                    "Analyse Freshness",
                     type="primary"
                 ):
 
-                    with st.spinner("Analyzing image..."):
+                    with st.spinner("Analysing image..."):
 
-                        st.session_state["scan_result"] = predict_image(
-                            image
-                        )
-
-                result = st.session_state.get("scan_result")
-
-                if result:
+                        result = predict_image(image)
 
                     st.divider()
 
-                    st.markdown(
-                        f"### {result['fruit']} — {result['condition']}"
-                    )
-
-                    confidence = result["confidence"]
+                    st.subheader("CNN Prediction")
 
                     st.metric(
-                        "Model confidence",
-                        f"{confidence * 100:.1f}%"
+                        "Predicted Fruit",
+                        result["fruit"]
                     )
 
-                    st.progress(confidence)
-
-                    st.caption(
-                        "This confidence represents the model's "
-                        "prediction for a dataset class. It is not "
-                        "a food-safety probability."
-                    )
-
-                    if confidence < 0.55:
-
+                    if result["condition"] == "Fresh-looking":
+                        st.success(
+                            f"Prediction: {result['condition']}"
+                        )
+                    else:
                         st.warning(
-                            "The model has relatively low confidence. "
-                            "Try another clear image with one fruit "
-                            "and a simple background."
+                            f"Prediction: {result['condition']}"
                         )
 
-                    st.markdown("#### All class probabilities")
+                    st.metric(
+                        "Model Confidence",
+                        f"{result['confidence'] * 100:.2f}%"
+                    )
+
+                    if result["confidence"] < 0.60:
+                        st.warning(
+                            "The model has relatively low confidence. "
+                            "Try a clearer image with one fruit in focus."
+                        )
+
+                    st.subheader("Class-wise Prediction Scores")
 
                     for score in result["scores"]:
 
                         st.write(
-                            f"{score['label']}: "
+                            f"**{score['label']}** — "
                             f"{score['probability'] * 100:.2f}%"
                         )
 
                         st.progress(
-                            score["probability"]
+                            max(
+                                0.0,
+                                min(1.0, score["probability"])
+                            )
                         )
 
-                    st.divider()
-
-                    if st.button("Explain result with GenAI"):
-
-                        prompt = (
-                            f"The image classifier predicted "
-                            f"{result['fruit']} — {result['condition']}. "
-                            f"The model confidence is "
-                            f"{confidence * 100:.2f}%. "
-                            f"Explain this result in simple scientific "
-                            f"language. Explain possible visible signs, "
-                            f"the limitations of image classification, "
-                            f"and general storage advice. Do not claim "
-                            f"the image proves the fruit is safe or unsafe."
-                        )
-
-                        with st.spinner(
-                            "Generating explanation with OpenRouter..."
-                        ):
-
-                            answer, error = call_openrouter(prompt)
-
-                        if error:
-
-                            st.error(error)
-
-                        else:
-
-                            st.markdown("### AI Explanation")
-
-                            st.markdown(answer)
+                    st.info(
+                        "This result describes visible appearance only. "
+                        "It cannot establish whether food is safe to eat "
+                        "or detect invisible pathogens."
+                    )
 
             except Exception as error:
+                st.error(
+                    f"Image analysis failed: {error}"
+                )
 
-                st.error(f"Image analysis failed: {error}")
 
-    st.divider()
+# ============================================================
+# 13. SPOILAGE RISK ESTIMATOR
+# ============================================================
 
-    st.subheader("ML Spoilage-Risk Demonstration")
+elif page == "Spoilage Risk Estimator":
 
-    st.warning(
-        "This Random Forest uses synthetic proxy labels. "
-        "Its output is not a validated real-world spoilage probability."
+    st.title("📊 Spoilage Risk Estimator")
+
+    st.write(
+        "Estimate a model-based risk score using storage-related inputs."
     )
 
-    col1, col2 = st.columns(2)
+    if risk_model is None:
+        st.error(risk_error)
 
-    with col1:
+    else:
 
-        risk_food = st.selectbox(
-            "Fruit type",
-            ["apple", "banana", "orange"]
-        )
+        with st.form("risk_form"):
 
-        days = st.number_input(
-            "Days since purchase",
-            min_value=0,
-            max_value=60,
-            value=2
-        )
-
-    with col2:
-
-        temperature = st.number_input(
-            "Storage temperature (°C)",
-            min_value=-10.0,
-            max_value=60.0,
-            value=22.0
-        )
-
-        humidity = st.number_input(
-            "Relative humidity (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=60.0
-        )
-
-    if st.button("Calculate demonstration score"):
-
-        score, error = estimate_spoilage_risk(
-            risk_food,
-            days,
-            temperature,
-            humidity
-        )
-
-        if error:
-
-            st.error(error)
-
-        else:
-
-            st.metric(
-                "Synthetic proxy-risk score",
-                f"{score * 100:.1f}%"
+            fruit = st.selectbox(
+                "Select fruit",
+                ["Apple", "Banana", "Orange"]
             )
 
-            st.caption(
-                "Educational model output only. "
-                "Not a food-safety assessment."
+            days = st.number_input(
+                "Days since purchase",
+                min_value=0,
+                max_value=60,
+                value=3
             )
+
+            temperature = st.number_input(
+                "Storage temperature (°C)",
+                min_value=-5.0,
+                max_value=50.0,
+                value=25.0,
+                step=0.5
+            )
+
+            humidity = st.slider(
+                "Storage humidity (%)",
+                min_value=0,
+                max_value=100,
+                value=60
+            )
+
+            submitted = st.form_submit_button(
+                "Estimate Risk",
+                type="primary"
+            )
+
+        if submitted:
+
+            try:
+
+                result = predict_spoilage_risk(
+                    fruit,
+                    days,
+                    temperature,
+                    humidity
+                )
+
+                st.divider()
+
+                st.subheader("Estimated Risk")
+
+                st.metric(
+                    "Risk Probability",
+                    f"{result['probability'] * 100:.1f}%"
+                )
+
+                if result["level"] == "Low":
+                    st.success(
+                        f"Risk category: {result['level']}"
+                    )
+
+                elif result["level"] == "Moderate":
+                    st.warning(
+                        f"Risk category: {result['level']}"
+                    )
+
+                else:
+                    st.error(
+                        f"Risk category: {result['level']}"
+                    )
+
+                st.write(result["explanation"])
+
+                st.info(
+                    "Research limitation: this model was trained using "
+                    "synthetic proxy labels, not laboratory-measured "
+                    "spoilage observations. Its output is educational "
+                    "and is not a validated shelf-life or food-safety "
+                    "prediction."
+                )
+
+            except Exception as error:
+                st.error(
+                    f"Risk estimation failed: {error}"
+                )
 
 
 # ============================================================
-# 13. FOOD INVENTORY
+# 14. GENAI FOOD ASSISTANT
 # ============================================================
 
-elif page == "Food Inventory":
+elif page == "GenAI Food Assistant":
 
-    st.subheader("Food Inventory Manager")
+    st.title("🤖 GenAI Food Assistant")
 
-    with st.form(
-        "inventory_form",
-        clear_on_submit=True
-    ):
+    st.write(
+        "Ask questions about fruit freshness, storage conditions "
+        "and food handling."
+    )
 
-        col1, col2, col3 = st.columns(3)
+    api_key, selected_model = get_openrouter_settings()
 
-        food = col1.text_input(
-            "Food item",
-            placeholder="e.g. Apples"
+    if not api_key:
+        st.warning(
+            "OpenRouter API key not found. Add "
+            "OPENROUTER_API_KEY to Streamlit Cloud Secrets."
         )
 
-        quantity = col2.number_input(
+    st.caption(
+        f"AI model: {selected_model}"
+    )
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    for message in st.session_state.chat_history:
+
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    question = st.chat_input(
+        "Ask FreshCheck AI a question..."
+    )
+
+    if question:
+
+        st.session_state.chat_history.append({
+            "role": "user",
+            "content": question
+        })
+
+        with st.chat_message("user"):
+            st.markdown(question)
+
+        with st.chat_message("assistant"):
+
+            with st.spinner("FreshCheck AI is thinking..."):
+
+                try:
+
+                    answer = ask_openrouter(
+                        question,
+                        st.session_state.chat_history[:-1]
+                    )
+
+                    st.markdown(answer)
+
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": answer
+                    })
+
+                except Exception as error:
+
+                    st.error(
+                        f"GenAI request failed: {error}"
+                    )
+
+    if st.button("Clear Chat"):
+        st.session_state.chat_history = []
+        st.rerun()
+
+
+# ============================================================
+# 15. FRUIT INVENTORY
+# ============================================================
+
+elif page == "Fruit Inventory":
+
+    st.title("📦 Fruit Inventory Manager")
+
+    st.write(
+        "Add fruits to your inventory and track their expiry dates."
+    )
+
+    with st.form("inventory_form"):
+
+        fruit = st.selectbox(
+            "Fruit",
+            ["Apple", "Banana", "Orange"]
+        )
+
+        quantity = st.number_input(
             "Quantity",
-            min_value=0.1,
-            value=1.0,
-            step=0.5
+            min_value=1,
+            max_value=10000,
+            value=1
         )
 
-        unit = col3.selectbox(
-            "Unit",
-            ["pieces", "kg", "g", "litres", "packets"]
-        )
-
-        col4, col5, col6 = st.columns(3)
-
-        purchase = col4.date_input(
+        purchase_date = st.date_input(
             "Purchase date",
             value=date.today()
         )
 
-        expiry = col5.date_input(
-            "Expiry / best-before date",
-            value=date.today() + timedelta(days=5)
+        expiry_date = st.date_input(
+            "Expected expiry date",
+            value=date.today()
         )
 
-        storage = col6.selectbox(
-            "Storage",
-            [
-                "Room temperature",
-                "Refrigerator",
-                "Freezer",
-                "Other"
-            ]
+        notes = st.text_area(
+            "Notes (optional)"
         )
 
-        notes = st.text_input("Additional notes")
-
-        submitted = st.form_submit_button(
-            "Add to inventory",
+        add_item = st.form_submit_button(
+            "Add to Inventory",
             type="primary"
         )
 
-    if submitted:
+    if add_item:
 
-        if not food.strip():
-
-            st.error("Enter a food item name.")
-
-        elif expiry < purchase:
-
+        if expiry_date < purchase_date:
             st.error(
                 "Expiry date cannot be earlier than purchase date."
             )
@@ -1161,471 +1034,296 @@ elif page == "Food Inventory":
         else:
 
             add_inventory_item(
-                food,
-                quantity,
-                unit,
-                purchase,
-                expiry,
-                storage,
+                fruit,
+                int(quantity),
+                purchase_date,
+                expiry_date,
                 notes
             )
 
-            st.success("Food item added successfully.")
+            st.success(
+                "Fruit added to inventory."
+            )
 
             st.rerun()
 
     st.divider()
 
-    st.markdown("### Your inventory")
+    st.subheader("Current Inventory")
 
-    inventory = fetch_inventory()
+    inventory = get_inventory()
 
     if not inventory:
-
-        st.info("Your inventory is empty. Add your first item above.")
+        st.info(
+            "Your inventory is empty. Add a fruit item above."
+        )
 
     else:
 
-        for item in inventory:
+        st.dataframe(
+            inventory,
+            use_container_width=True,
+            hide_index=True
+        )
 
-            expiry_date = date.fromisoformat(
-                item["expiry_date"]
+        item_ids = [
+            item["ID"] for item in inventory
+        ]
+
+        selected_id = st.selectbox(
+            "Select an inventory entry to delete",
+            item_ids
+        )
+
+        if st.button(
+            "Delete Selected Entry",
+            type="secondary"
+        ):
+
+            delete_inventory_item(
+                int(selected_id)
             )
 
-            days_left = (
-                expiry_date - date.today()
-            ).days
-
-            with st.container(border=True):
-
-                col1, col2 = st.columns([4, 1])
-
-                with col1:
-
-                    st.markdown(f"**{item['food']}**")
-
-                    st.write(
-                        f"Quantity: {item['quantity']:g} {item['unit']}"
-                    )
-
-                    st.write(
-                        f"Purchase date: {item['purchase_date']}"
-                    )
-
-                    st.write(
-                        f"Expiry date: {item['expiry_date']}"
-                    )
-
-                    st.write(
-                        f"Storage: {item['storage']}"
-                    )
-
-                    if item["notes"]:
-                        st.caption(item["notes"])
-
-                with col2:
-
-                    if days_left < 0:
-
-                        st.error("Past entered date")
-
-                    elif days_left <= 3:
-
-                        st.warning(
-                            f"{days_left} day(s) left"
-                        )
-
-                    else:
-
-                        st.success(
-                            f"{days_left} days left"
-                        )
-
-                    if st.button(
-                        "Delete",
-                        key=f"delete_{item['id']}"
-                    ):
-
-                        delete_inventory_item(item["id"])
-
-                        st.rerun()
-
-
-# ============================================================
-# 14. AI FOOD ASSISTANT
-# ============================================================
-
-elif page == "AI Food Assistant":
-
-    st.subheader("🤖 AI Food Assistant")
-
-    st.write(
-        "Ask questions about food storage, fruit freshness, "
-        "food handling and reducing food waste."
-    )
-
-    api_key, model_name = get_openrouter_config()
-
-    if api_key:
-
-        st.success(
-            f"Configured OpenRouter model: {model_name}"
-        )
-
-    else:
-
-        st.error(
-            "OpenRouter API key is missing. "
-            "Configure .streamlit/secrets.toml."
-        )
-
-    if "chat_history" not in st.session_state:
-
-        st.session_state["chat_history"] = []
-
-    for message in st.session_state["chat_history"]:
-
-        with st.chat_message(message["role"]):
-
-            st.markdown(message["content"])
-
-    question = st.chat_input(
-        "Ask FreshCheck AI anything about food..."
-    )
-
-    if question:
-
-        st.session_state["chat_history"].append(
-            {
-                "role": "user",
-                "content": question
-            }
-        )
-
-        with st.chat_message("user"):
-
-            st.markdown(question)
-
-        with st.chat_message("assistant"):
-
-            with st.spinner(
-                "Generating your answer using OpenRouter..."
-            ):
-
-                answer, error = call_openrouter(question)
-
-            if error:
-
-                st.error(error)
-
-                displayed_answer = error
-
-            else:
-
-                st.markdown(answer)
-
-                displayed_answer = answer
-
-        st.session_state["chat_history"].append(
-            {
-                "role": "assistant",
-                "content": displayed_answer
-            }
-        )
-
-    if st.session_state["chat_history"]:
-
-        if st.button("Clear chat history"):
-
-            st.session_state["chat_history"] = []
+            st.success(
+                "Inventory entry deleted."
+            )
 
             st.rerun()
 
+        st.subheader("Expiry Status")
+
+        today = date.today()
+
+        for item in inventory:
+
+            expiry = date.fromisoformat(
+                item["Expiry Date"]
+            )
+
+            if expiry < today:
+                st.error(
+                    f"{item['Fruit']} — expired on {expiry}"
+                )
+
+            elif expiry == today:
+                st.warning(
+                    f"{item['Fruit']} — due today"
+                )
+
+            else:
+                st.success(
+                    f"{item['Fruit']} — expected expiry: {expiry}"
+                )
+
 
 # ============================================================
-# 15. ANALYTICS AND REPORTS
+# 16. ANALYTICS AND CSV EXPORT
 # ============================================================
 
-elif page == "Analytics & Reports":
+elif page == "Analytics":
 
-    st.subheader("Inventory Analytics & Reports")
+    st.title("📈 FreshCheck AI Analytics")
 
-    inventory = fetch_inventory()
+    inventory = get_inventory()
 
     if not inventory:
 
         st.info(
-            "Add food items to your inventory to see analytics."
+            "Add fruit entries to the inventory to view analytics."
         )
 
     else:
 
-        today = date.today()
+        fruit_counts = {}
 
-        expired_count = 0
-        expiring_count = 0
-
-        quantity_summary = {}
-
-        report_rows = []
+        total_quantity = 0
 
         for item in inventory:
 
-            expiry_date = date.fromisoformat(
-                item["expiry_date"]
+            fruit_name = item["Fruit"]
+
+            quantity = item["Quantity"]
+
+            fruit_counts[fruit_name] = (
+                fruit_counts.get(fruit_name, 0) + quantity
             )
 
-            days_left = (
-                expiry_date - today
-            ).days
+            total_quantity += quantity
 
-            if days_left < 0:
-
-                status = "Past entered date"
-
-                expired_count += 1
-
-            elif days_left <= 3:
-
-                status = "Expiring soon"
-
-                expiring_count += 1
-
-            else:
-
-                status = "Within entered date"
-
-            quantity_summary[item["food"]] = (
-                quantity_summary.get(item["food"], 0)
-                + float(item["quantity"])
-            )
-
-            report_rows.append({
-                "ID": item["id"],
-                "Food": item["food"],
-                "Quantity": item["quantity"],
-                "Unit": item["unit"],
-                "Purchase date": item["purchase_date"],
-                "Expiry date": item["expiry_date"],
-                "Days remaining": days_left,
-                "Storage": item["storage"],
-                "Notes": item["notes"],
-                "Status": status
-            })
-
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
 
         col1.metric(
-            "Total items",
-            len(inventory)
+            "Total Inventory Quantity",
+            total_quantity
         )
 
         col2.metric(
-            "Expiring soon",
-            expiring_count
+            "Number of Inventory Entries",
+            len(inventory)
         )
 
-        col3.metric(
-            "Past entered date",
-            expired_count
+        st.subheader("Fruit Quantity Distribution")
+
+        chart_data = {
+            "Fruit": list(fruit_counts.keys()),
+            "Quantity": list(fruit_counts.values())
+        }
+
+        st.bar_chart(
+            chart_data,
+            x="Fruit",
+            y="Quantity"
         )
 
-        st.divider()
+        st.subheader("Inventory Data")
 
-        st.markdown("### Quantity by food item")
-
-        for food_name, quantity_value in quantity_summary.items():
-
-            st.write(
-                f"**{food_name}:** {quantity_value:g}"
-            )
-
-        st.divider()
-
-        st.markdown("### Inventory details")
-
-        for row in report_rows:
-
-            with st.container(border=True):
-
-                st.write(
-                    f"**{row['Food']}** — "
-                    f"{row['Quantity']} {row['Unit']}"
-                )
-
-                st.write(
-                    f"Expiry: {row['Expiry date']} | "
-                    f"Status: {row['Status']}"
-                )
-
-        # CSV EXPORT
+        st.dataframe(
+            inventory,
+            use_container_width=True,
+            hide_index=True
+        )
 
         csv_buffer = io.StringIO()
 
         writer = csv.DictWriter(
             csv_buffer,
-            fieldnames=list(report_rows[0].keys())
+            fieldnames=inventory[0].keys()
         )
 
         writer.writeheader()
-
-        writer.writerows(report_rows)
+        writer.writerows(inventory)
 
         st.download_button(
-            "Download inventory CSV report",
-            data=csv_buffer.getvalue().encode("utf-8"),
-            file_name="freshcheck_inventory_report.csv",
+            label="Download Inventory CSV",
+            data=csv_buffer.getvalue(),
+            file_name="freshcheck_inventory.csv",
             mime="text/csv"
         )
 
-        st.divider()
-
-        if st.button("Generate AI food-waste suggestions"):
-
-            summary = "\n".join(
-                [
-                    f"- {row['Food']}: "
-                    f"{row['Quantity']} {row['Unit']}, "
-                    f"expiry {row['Expiry date']}, "
-                    f"storage {row['Storage']}"
-                    for row in report_rows
-                ]
-            )
-
-            prompt = (
-                "Analyze this food inventory and suggest practical "
-                "ways to reduce food waste and improve storage. "
-                "Do not guarantee shelf life or certify food safety.\n\n"
-                + summary
-            )
-
-            with st.spinner(
-                "Generating suggestions using OpenRouter..."
-            ):
-
-                answer, error = call_openrouter(prompt)
-
-            if error:
-
-                st.error(error)
-
-            else:
-
-                st.markdown("### AI Suggestions")
-
-                st.markdown(answer)
-
 
 # ============================================================
-# 16. ABOUT AND SETUP
+# 17. MODEL INFORMATION AND DIAGNOSTICS
 # ============================================================
 
-elif page == "About & Setup":
+elif page == "Model Information":
 
-    st.subheader("About FreshCheck AI")
+    st.title("🔍 Model Information & Diagnostics")
 
-    st.markdown(
-        """
-        FreshCheck AI is a portfolio project integrating
-        three major AI technologies with food inventory management.
+    st.subheader("CNN Fruit Freshness Model")
 
-        ### 1. Deep Learning
-        CNN-based image classification of:
-        - Fresh-looking apples
-        - Fresh-looking bananas
-        - Fresh-looking oranges
-        - Rotten-looking apples
-        - Rotten-looking bananas
-        - Rotten-looking oranges
-
-        ### 2. Machine Learning
-        Random Forest model using:
-        - Fruit type
-        - Days since purchase
-        - Storage temperature
-        - Relative humidity
-
-        ### 3. Generative AI
-        OpenRouter-hosted language model for:
-        - Food storage questions
-        - Image-result explanations
-        - Food-waste reduction suggestions
-
-        ### 4. Database
-        SQLite-based inventory management.
-
-        ### 5. Analytics
-        Inventory summaries and CSV reports.
-        """
-    )
-
-    st.divider()
-
-    st.markdown("### Model status")
-
-    if cnn is not None:
-
-        st.success("CNN model loaded successfully.")
-
-    else:
+    if cnn is None:
 
         st.error(cnn_error)
 
-    if risk_model is not None:
-
-        st.success("Random Forest model loaded successfully.")
-
     else:
 
-        st.warning(risk_error)
+        st.success("CNN model loaded successfully.")
 
-    api_key, model_name = get_openrouter_config()
+        st.write("**Model file:**", str(CNN_PATH))
+        st.write("**Input shape:**", str(cnn.input_shape))
+        st.write("**Output shape:**", str(cnn.output_shape))
 
-    if api_key:
+        st.write("**Expected class order:**")
 
-        st.success(
-            f"OpenRouter API key detected. Model: {model_name}"
-        )
+        for index, class_name in enumerate(CLASSES):
+            st.write(f"{index}: {class_name}")
 
-    else:
+        rescaling_layers = []
 
-        st.error("OpenRouter API key not detected.")
+        for layer in cnn.layers:
+
+            if layer.__class__.__name__ == "Rescaling":
+                rescaling_layers.append(layer)
+
+        if rescaling_layers:
+
+            st.success(
+                "Rescaling layer detected inside the CNN. "
+                "The app passes image pixels in the 0–255 range."
+            )
+
+            for layer in rescaling_layers:
+                st.write(
+                    f"Layer: {layer.name} | "
+                    f"Configuration: {layer.get_config()}"
+                )
+
+        else:
+
+            st.warning(
+                "No top-level Rescaling layer was detected. "
+                "Check the model's training preprocessing before "
+                "changing inference scaling."
+            )
+
+        st.write("**CNN SHA256 fingerprint:**")
+
+        st.code(cnn_fingerprint)
 
     st.divider()
 
-    st.markdown("### OpenRouter configuration")
+    st.subheader("Risk Model")
+
+    if risk_model is None:
+
+        st.error(risk_error)
+
+    else:
+
+        st.success("Risk model loaded successfully.")
+
+        st.write("**Model file:**", str(RISK_PATH))
+
+        st.write(
+            "**Expected input feature order:** "
+            "Fruit code, days since purchase, temperature, humidity"
+        )
+
+        if hasattr(risk_model, "classes_"):
+            st.write(
+                "**Risk model classes:**",
+                str(list(risk_model.classes_))
+            )
+
+        st.write("**Risk model SHA256 fingerprint:**")
+
+        st.code(risk_fingerprint)
+
+    st.divider()
+
+    st.subheader("Deployment Checks")
 
     st.write(
-        "Create `.streamlit/secrets.toml` inside your project folder."
+        "Confirm that your GitHub repository contains these exact files:"
     )
 
     st.code(
-        'OPENROUTER_API_KEY = "YOUR_NEW_API_KEY"\n'
-        'OPENROUTER_MODEL = "openai/gpt-4o-mini"',
-        language="toml"
-    )
-
-    st.info(
-        "Keep your API key private. Do not place it in app.py "
-        "or upload secrets.toml to GitHub."
-    )
-
-    st.divider()
-
-    st.markdown("### Scientific limitations")
-
-    st.warning(
-        "CNN image classification detects visual patterns learned "
-        "from the training dataset. It cannot detect invisible "
-        "pathogens or certify food safety."
-    )
-
-    st.warning(
-        "The Random Forest uses synthetic proxy labels. "
-        "Its predictions are not validated against real-world "
-        "spoilage observations."
+        """
+FreshCheck_AI/
+│
+├── app.py
+├── requirements.txt
+├── README.md
+│
+└── models/
+    ├── freshness_cnn.keras
+    └── spoilage_risk.joblib
+        """
     )
 
     st.caption(
-        "FreshCheck AI | Educational AI portfolio project"
+        "The CNN class order in this app must match the order "
+        "used when the model was trained."
     )
+
+
+# ============================================================
+# 18. FOOTER
+# ============================================================
+
+st.divider()
+
+st.caption(
+    "FreshCheck AI | Educational prototype combining "
+    "CNN, Machine Learning, Generative AI and SQLite."
+)
