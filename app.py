@@ -1,6 +1,6 @@
 
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date
 import hashlib
 import io
 import os
@@ -14,7 +14,7 @@ from PIL import Image, ImageOps
 
 
 # ============================================================
-# 1. APP CONFIGURATION
+# 1. CONFIGURATION
 # ============================================================
 
 ROOT = Path(__file__).resolve().parent
@@ -25,13 +25,6 @@ RISK_PATH = MODEL_DIR / "spoilage_risk.joblib"
 DB_PATH = ROOT / "freshcheck_inventory.db"
 
 IMG_SIZE = (224, 224)
-
-st.set_page_config(
-    page_title="FreshCheck AI",
-    page_icon="🍎",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 CLASSES = [
     "freshapples",
@@ -57,32 +50,33 @@ FRUIT_CODES = {
     "Orange": 2
 }
 
+st.set_page_config(
+    page_title="FreshCheck AI",
+    page_icon="🍎",
+    layout="wide"
+)
+
 
 # ============================================================
-# 2. CUSTOM CSS
+# 2. CUSTOM STYLE
 # ============================================================
 
 st.markdown(
     """
     <style>
-    .main {
-        background-color: #f7f9fc;
-    }
-
     .block-container {
         padding-top: 1.5rem;
         padding-bottom: 2rem;
     }
 
     .main-title {
-        font-size: 2.3rem;
+        font-size: 2.4rem;
         font-weight: 800;
         color: #176b45;
-        margin-bottom: 0.2rem;
     }
 
     .subtitle {
-        color: #5c6670;
+        color: #667085;
         font-size: 1rem;
         margin-bottom: 1.5rem;
     }
@@ -94,11 +88,6 @@ st.markdown(
         border: 1px solid #e5e9ef;
         margin-bottom: 12px;
     }
-
-    .small-note {
-        color: #667085;
-        font-size: 0.85rem;
-    }
     </style>
     """,
     unsafe_allow_html=True
@@ -106,11 +95,10 @@ st.markdown(
 
 
 # ============================================================
-# 3. MODEL FILE VERIFICATION
+# 3. MODEL FILE HASH
 # ============================================================
 
 def get_file_hash(path):
-    """Return SHA256 hash of a model file."""
 
     sha = hashlib.sha256()
 
@@ -125,10 +113,6 @@ def get_file_hash(path):
 
 
 def get_model_fingerprint(path):
-    """
-    Create a fingerprint for Streamlit caching.
-    If the model file changes, the cache key changes too.
-    """
 
     if not path.exists():
         return "missing"
@@ -136,11 +120,15 @@ def get_model_fingerprint(path):
     return get_file_hash(path)
 
 
+cnn_fingerprint = get_model_fingerprint(CNN_PATH)
+risk_fingerprint = get_model_fingerprint(RISK_PATH)
+
+
 # ============================================================
-# 4. LOAD CNN MODEL
+# 4. LOAD CNN
 # ============================================================
 
-@st.cache_resource(show_spinner="Loading fruit freshness model...")
+@st.cache_resource(show_spinner="Loading CNN model...")
 def load_cnn_model(model_path, fingerprint):
 
     if not Path(model_path).exists():
@@ -156,18 +144,15 @@ def load_cnn_model(model_path, fingerprint):
 
         if model.output_shape[-1] != len(CLASSES):
             return None, (
-                "CNN output does not match the six expected classes. "
-                f"Expected {len(CLASSES)}, "
-                f"received {model.output_shape[-1]}."
+                f"Expected {len(CLASSES)} output classes, "
+                f"but model has {model.output_shape[-1]}."
             )
 
         if len(model.input_shape) != 4:
-            return None, "Unexpected CNN input shape."
+            return None, "Unexpected CNN input dimensions."
 
         if model.input_shape[-1] != 3:
-            return None, (
-                "The CNN model is not configured for RGB images."
-            )
+            return None, "CNN does not expect RGB images."
 
         return model, None
 
@@ -176,10 +161,10 @@ def load_cnn_model(model_path, fingerprint):
 
 
 # ============================================================
-# 5. LOAD SPOILAGE RISK MODEL
+# 5. LOAD RISK MODEL
 # ============================================================
 
-@st.cache_resource(show_spinner="Loading spoilage-risk model...")
+@st.cache_resource(show_spinner="Loading risk model...")
 def load_risk_model(model_path, fingerprint):
 
     if not Path(model_path).exists():
@@ -195,9 +180,6 @@ def load_risk_model(model_path, fingerprint):
     except Exception as error:
         return None, f"Risk model loading failed: {error}"
 
-
-cnn_fingerprint = get_model_fingerprint(CNN_PATH)
-risk_fingerprint = get_model_fingerprint(RISK_PATH)
 
 cnn, cnn_error = load_cnn_model(
     str(CNN_PATH),
@@ -218,17 +200,17 @@ def predict_image(uploaded_image):
 
     if cnn is None:
         raise RuntimeError(
-            cnn_error or "CNN model is unavailable."
+            cnn_error or "CNN model unavailable."
         )
 
-    # Correct image orientation and RGB conversion
+    # Correct orientation and convert to RGB
     image = ImageOps.exif_transpose(uploaded_image)
     image = image.convert("RGB")
     image = image.resize(IMG_SIZE)
 
     # IMPORTANT:
-    # Your trained CNN already contains Rescaling(1./255).
-    # Therefore, do NOT divide this array by 255 again.
+    # The trained model already contains Rescaling(1./255).
+    # Do not divide the image array by 255 here.
 
     image_array = np.asarray(
         image,
@@ -246,22 +228,21 @@ def predict_image(uploaded_image):
     )[0]
 
     if len(predictions) != len(CLASSES):
-        raise ValueError(
-            "Unexpected CNN output dimensions."
-        )
+        raise ValueError("Unexpected CNN output dimensions.")
 
     predicted_index = int(np.argmax(predictions))
     predicted_class = CLASSES[predicted_index]
 
     fruit, condition = CLASS_DETAILS[predicted_class]
 
-    score_list = []
+    scores = []
 
     for index, class_name in enumerate(CLASSES):
 
         score_fruit, score_condition = CLASS_DETAILS[class_name]
 
-        score_list.append({
+        scores.append({
+            "class_name": class_name,
             "label": f"{score_fruit} — {score_condition}",
             "probability": float(predictions[index])
         })
@@ -271,7 +252,10 @@ def predict_image(uploaded_image):
         "fruit": fruit,
         "condition": condition,
         "confidence": float(predictions[predicted_index]),
-        "scores": score_list
+        "scores": scores,
+        "image_shape": image_array.shape,
+        "pixel_min": float(image_array.min()),
+        "pixel_max": float(image_array.max())
     }
 
 
@@ -288,13 +272,11 @@ def predict_spoilage_risk(
 
     if risk_model is None:
         raise RuntimeError(
-            risk_error or "Risk model is unavailable."
+            risk_error or "Risk model unavailable."
         )
 
-    fruit_code = FRUIT_CODES[fruit]
-
     features = np.array([[
-        fruit_code,
+        FRUIT_CODES[fruit],
         days_since_purchase,
         temperature,
         humidity
@@ -308,27 +290,23 @@ def predict_spoilage_risk(
     else:
         risk_index = int(np.argmax(probabilities))
 
-    risk_probability = float(probabilities[risk_index])
+    probability = float(probabilities[risk_index])
 
-    if risk_probability < 0.35:
-        risk_level = "Low"
-        explanation = "The model estimates a relatively low risk."
-    elif risk_probability < 0.70:
-        risk_level = "Moderate"
-        explanation = "The model estimates a moderate risk."
+    if probability < 0.35:
+        level = "Low"
+    elif probability < 0.70:
+        level = "Moderate"
     else:
-        risk_level = "High"
-        explanation = "The model estimates a relatively high risk."
+        level = "High"
 
     return {
-        "probability": risk_probability,
-        "level": risk_level,
-        "explanation": explanation
+        "probability": probability,
+        "level": level
     }
 
 
 # ============================================================
-# 8. SQLITE INVENTORY DATABASE
+# 8. SQLITE INVENTORY
 # ============================================================
 
 def get_connection():
@@ -432,7 +410,7 @@ initialize_database()
 
 
 # ============================================================
-# 9. OPENROUTER GENAI ASSISTANT
+# 9. OPENROUTER GENAI
 # ============================================================
 
 def get_openrouter_settings():
@@ -452,43 +430,40 @@ def get_openrouter_settings():
     if not api_key:
         api_key = os.getenv("OPENROUTER_API_KEY")
 
-    if not os.getenv("OPENROUTER_MODEL"):
-        model_name = os.getenv(
-            "OPENROUTER_MODEL",
-            model_name
-        )
+    model_name = os.getenv(
+        "OPENROUTER_MODEL",
+        model_name
+    )
 
     return api_key, model_name
 
 
-def ask_openrouter(question, chat_history):
+def ask_openrouter(question, history):
 
     api_key, model_name = get_openrouter_settings()
 
     if not api_key:
         raise RuntimeError(
-            "OpenRouter API key is not configured. "
-            "Add OPENROUTER_API_KEY in Streamlit Cloud Secrets."
+            "OpenRouter API key is not configured."
         )
 
     system_prompt = """
 You are FreshCheck AI, a helpful food freshness and storage assistant.
 
-Your responsibilities:
-1. Answer questions about fruit storage and food freshness.
-2. Explain common visible signs of fruit spoilage.
-3. Give practical food storage recommendations.
-4. Explain how temperature and humidity can affect fruit storage.
-5. Use simple language suitable for students and general users.
+Help users understand:
+- Fruit storage
+- Visible freshness indicators
+- Common spoilage signs
+- Temperature and humidity effects
+- Practical food handling
 
-Important safety rules:
-- Never claim that an image can prove food is safe to eat.
+Safety instructions:
+- An image cannot prove food is safe to eat.
 - Visible appearance cannot detect all harmful microorganisms.
-- If food has mold, unusual odor, sliminess, leakage, or other clear
-  signs of spoilage, advise the user not to consume it.
-- Do not present the application's ML risk estimate as a validated
-  food-safety measurement.
-- If uncertain, clearly say so.
+- Do not claim that the ML risk estimate is a validated food-safety result.
+- If food has mold, unusual odor, sliminess or leakage, advise the
+  user not to consume it.
+- Clearly communicate uncertainty.
 """
 
     messages = [
@@ -498,8 +473,7 @@ Important safety rules:
         }
     ]
 
-    for message in chat_history[-8:]:
-        messages.append(message)
+    messages.extend(history[-8:])
 
     messages.append({
         "role": "user",
@@ -524,14 +498,14 @@ Important safety rules:
     )
 
     if response.status_code != 200:
+
         try:
-            error_details = response.json()
+            details = response.json()
         except Exception:
-            error_details = response.text
+            details = response.text
 
         raise RuntimeError(
-            f"OpenRouter error ({response.status_code}): "
-            f"{error_details}"
+            f"OpenRouter error {response.status_code}: {details}"
         )
 
     result = response.json()
@@ -540,7 +514,7 @@ Important safety rules:
 
 
 # ============================================================
-# 10. SIDEBAR NAVIGATION
+# 10. SIDEBAR
 # ============================================================
 
 st.sidebar.title("🍎 FreshCheck AI")
@@ -565,13 +539,12 @@ page = st.sidebar.radio(
 st.sidebar.divider()
 
 st.sidebar.caption(
-    "FreshCheck AI is an educational prototype. "
-    "It does not certify food safety."
+    "Educational prototype — not a food-safety certification tool."
 )
 
 
 # ============================================================
-# 11. HOME PAGE
+# 11. HOME
 # ============================================================
 
 if page == "Home":
@@ -591,89 +564,59 @@ if page == "Home":
 
     inventory = get_inventory()
 
-    total_items = sum(
+    total_quantity = sum(
         item["Quantity"] for item in inventory
     )
 
-    today = date.today()
-
-    expiring_items = 0
+    due_items = 0
 
     for item in inventory:
-        try:
-            expiry = date.fromisoformat(item["Expiry Date"])
 
-            if expiry <= today:
-                expiring_items += 1
+        expiry = date.fromisoformat(item["Expiry Date"])
 
-        except ValueError:
-            pass
+        if expiry <= date.today():
+            due_items += 1
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric(
-        "Inventory Entries",
-        len(inventory)
-    )
-
-    col2.metric(
-        "Total Fruit Quantity",
-        total_items
-    )
-
-    col3.metric(
-        "Expired / Due Today",
-        expiring_items
-    )
+    col1.metric("Inventory Entries", len(inventory))
+    col2.metric("Total Fruit Quantity", total_quantity)
+    col3.metric("Expired / Due Today", due_items)
 
     st.divider()
 
     st.subheader("Explore FreshCheck AI")
 
-    card1, card2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
-    with card1:
+    with col1:
         st.markdown(
             """
             <div class="info-card">
                 <h3>📷 Freshness Scanner</h3>
-                Upload a fruit image and classify it as
-                fresh-looking or rotten-looking using a CNN.
+                Upload fruit images and classify their visible
+                appearance using a CNN.
             </div>
-            """,
-            unsafe_allow_html=True
-        )
 
-        st.markdown(
-            """
             <div class="info-card">
                 <h3>🤖 GenAI Food Assistant</h3>
-                Ask questions about fruit storage,
-                freshness and food handling.
+                Ask questions about fruit storage and freshness.
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    with card2:
+    with col2:
         st.markdown(
             """
             <div class="info-card">
                 <h3>📊 Spoilage Risk Estimator</h3>
-                Explore an ML-based risk estimate using
-                fruit type, storage duration, temperature
-                and humidity.
+                Explore an ML-based risk estimate from storage inputs.
             </div>
-            """,
-            unsafe_allow_html=True
-        )
 
-        st.markdown(
-            """
             <div class="info-card">
                 <h3>📦 Fruit Inventory</h3>
-                Record fruit purchases and expiry dates
-                and monitor your inventory.
+                Record purchases and monitor expiry dates.
             </div>
             """,
             unsafe_allow_html=True
@@ -681,16 +624,14 @@ if page == "Home":
 
     st.divider()
 
-    st.subheader("How the system works")
+    st.subheader("How it works")
 
     st.markdown(
         """
-        1. **Deep Learning:** A CNN analyses an uploaded fruit image.
-        2. **Machine Learning:** A Random Forest model estimates a
-           spoilage-risk probability from storage-related inputs.
-        3. **Generative AI:** OpenRouter provides conversational
-           food-storage guidance.
-        4. **Database:** SQLite stores inventory and expiry details.
+        1. **Deep Learning:** CNN analyses fruit images.
+        2. **Machine Learning:** Random Forest estimates a risk score.
+        3. **Generative AI:** OpenRouter answers food-storage questions.
+        4. **Database:** SQLite stores fruit inventory information.
         """
     )
 
@@ -704,28 +645,24 @@ elif page == "Freshness Scanner":
     st.title("📷 Fruit Freshness Scanner")
 
     st.write(
-        "Upload an image of an apple, banana or orange. "
-        "The CNN will predict its visible freshness category."
+        "Upload an image of an apple, banana or orange."
     )
 
     if cnn is None:
-        st.error(cnn_error)
 
-        st.info(
-            "Check that models/freshness_cnn.keras exists "
-            "in your GitHub repository."
-        )
+        st.error(cnn_error)
 
     else:
 
         uploaded_file = st.file_uploader(
-            "Upload a fruit image",
+            "Upload fruit image",
             type=["jpg", "jpeg", "png", "webp"]
         )
 
         if uploaded_file is not None:
 
             try:
+
                 image = Image.open(uploaded_file)
                 image = ImageOps.exif_transpose(image).convert("RGB")
 
@@ -763,22 +700,22 @@ elif page == "Freshness Scanner":
                         )
 
                     st.metric(
-                        "Model Confidence",
+                        "Confidence",
                         f"{result['confidence'] * 100:.2f}%"
                     )
 
                     if result["confidence"] < 0.60:
                         st.warning(
                             "The model has relatively low confidence. "
-                            "Try a clearer image with one fruit in focus."
+                            "Try a clear image containing one fruit."
                         )
 
-                    st.subheader("Class-wise Prediction Scores")
+                    st.subheader("All Six Class Scores")
 
                     for score in result["scores"]:
 
                         st.write(
-                            f"**{score['label']}** — "
+                            f"**{score['class_name']}** — "
                             f"{score['probability'] * 100:.2f}%"
                         )
 
@@ -789,15 +726,39 @@ elif page == "Freshness Scanner":
                             )
                         )
 
+                    # Temporary diagnostics for prediction debugging
+                    with st.expander("Image prediction diagnostics"):
+
+                        st.write(
+                            "Input image shape:",
+                            result["image_shape"]
+                        )
+
+                        st.write(
+                            "Minimum pixel value:",
+                            result["pixel_min"]
+                        )
+
+                        st.write(
+                            "Maximum pixel value:",
+                            result["pixel_max"]
+                        )
+
+                        st.write(
+                            "Preprocessing: RGB, 224 × 224, "
+                            "float32, pixel range 0–255."
+                        )
+
                     st.info(
-                        "This result describes visible appearance only. "
-                        "It cannot establish whether food is safe to eat "
-                        "or detect invisible pathogens."
+                        "This model classifies visible appearance only. "
+                        "It cannot detect invisible pathogens or certify "
+                        "food safety."
                     )
 
             except Exception as error:
+
                 st.error(
-                    f"Image analysis failed: {error}"
+                    f"Image prediction failed: {error}"
                 )
 
 
@@ -810,10 +771,11 @@ elif page == "Spoilage Risk Estimator":
     st.title("📊 Spoilage Risk Estimator")
 
     st.write(
-        "Estimate a model-based risk score using storage-related inputs."
+        "Estimate a model-based risk score using storage inputs."
     )
 
     if risk_model is None:
+
         st.error(risk_error)
 
     else:
@@ -833,7 +795,7 @@ elif page == "Spoilage Risk Estimator":
             )
 
             temperature = st.number_input(
-                "Storage temperature (°C)",
+                "Temperature (°C)",
                 min_value=-5.0,
                 max_value=50.0,
                 value=25.0,
@@ -841,7 +803,7 @@ elif page == "Spoilage Risk Estimator":
             )
 
             humidity = st.slider(
-                "Storage humidity (%)",
+                "Humidity (%)",
                 min_value=0,
                 max_value=100,
                 value=60
@@ -865,39 +827,29 @@ elif page == "Spoilage Risk Estimator":
 
                 st.divider()
 
-                st.subheader("Estimated Risk")
-
                 st.metric(
-                    "Risk Probability",
+                    "Estimated Risk Probability",
                     f"{result['probability'] * 100:.1f}%"
                 )
 
                 if result["level"] == "Low":
-                    st.success(
-                        f"Risk category: {result['level']}"
-                    )
+                    st.success("Risk category: Low")
 
                 elif result["level"] == "Moderate":
-                    st.warning(
-                        f"Risk category: {result['level']}"
-                    )
+                    st.warning("Risk category: Moderate")
 
                 else:
-                    st.error(
-                        f"Risk category: {result['level']}"
-                    )
-
-                st.write(result["explanation"])
+                    st.error("Risk category: High")
 
                 st.info(
-                    "Research limitation: this model was trained using "
-                    "synthetic proxy labels, not laboratory-measured "
-                    "spoilage observations. Its output is educational "
-                    "and is not a validated shelf-life or food-safety "
-                    "prediction."
+                    "This model was trained using synthetic proxy labels, "
+                    "not laboratory-measured spoilage observations. "
+                    "It is an educational estimate, not a validated "
+                    "shelf-life or food-safety prediction."
                 )
 
             except Exception as error:
+
                 st.error(
                     f"Risk estimation failed: {error}"
                 )
@@ -912,11 +864,10 @@ elif page == "GenAI Food Assistant":
     st.title("🤖 GenAI Food Assistant")
 
     st.write(
-        "Ask questions about fruit freshness, storage conditions "
-        "and food handling."
+        "Ask questions about fruit freshness, storage and food handling."
     )
 
-    api_key, selected_model = get_openrouter_settings()
+    api_key, model_name = get_openrouter_settings()
 
     if not api_key:
         st.warning(
@@ -924,9 +875,7 @@ elif page == "GenAI Food Assistant":
             "OPENROUTER_API_KEY to Streamlit Cloud Secrets."
         )
 
-    st.caption(
-        f"AI model: {selected_model}"
-    )
+    st.caption(f"AI model: {model_name}")
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
@@ -937,10 +886,12 @@ elif page == "GenAI Food Assistant":
             st.markdown(message["content"])
 
     question = st.chat_input(
-        "Ask FreshCheck AI a question..."
+        "Ask FreshCheck AI..."
     )
 
     if question:
+
+        history = st.session_state.chat_history.copy()
 
         st.session_state.chat_history.append({
             "role": "user",
@@ -952,13 +903,13 @@ elif page == "GenAI Food Assistant":
 
         with st.chat_message("assistant"):
 
-            with st.spinner("FreshCheck AI is thinking..."):
+            with st.spinner("Thinking..."):
 
                 try:
 
                     answer = ask_openrouter(
                         question,
-                        st.session_state.chat_history[:-1]
+                        history
                     )
 
                     st.markdown(answer)
@@ -975,6 +926,7 @@ elif page == "GenAI Food Assistant":
                     )
 
     if st.button("Clear Chat"):
+
         st.session_state.chat_history = []
         st.rerun()
 
@@ -986,10 +938,6 @@ elif page == "GenAI Food Assistant":
 elif page == "Fruit Inventory":
 
     st.title("📦 Fruit Inventory Manager")
-
-    st.write(
-        "Add fruits to your inventory and track their expiry dates."
-    )
 
     with st.form("inventory_form"):
 
@@ -1019,16 +967,17 @@ elif page == "Fruit Inventory":
             "Notes (optional)"
         )
 
-        add_item = st.form_submit_button(
+        submitted = st.form_submit_button(
             "Add to Inventory",
             type="primary"
         )
 
-    if add_item:
+    if submitted:
 
         if expiry_date < purchase_date:
+
             st.error(
-                "Expiry date cannot be earlier than purchase date."
+                "Expiry date cannot be before purchase date."
             )
 
         else:
@@ -1041,22 +990,18 @@ elif page == "Fruit Inventory":
                 notes
             )
 
-            st.success(
-                "Fruit added to inventory."
-            )
-
+            st.success("Fruit added successfully.")
             st.rerun()
 
     st.divider()
 
-    st.subheader("Current Inventory")
-
     inventory = get_inventory()
 
+    st.subheader("Current Inventory")
+
     if not inventory:
-        st.info(
-            "Your inventory is empty. Add a fruit item above."
-        )
+
+        st.info("Your inventory is empty.")
 
     else:
 
@@ -1066,58 +1011,45 @@ elif page == "Fruit Inventory":
             hide_index=True
         )
 
-        item_ids = [
-            item["ID"] for item in inventory
-        ]
-
         selected_id = st.selectbox(
-            "Select an inventory entry to delete",
-            item_ids
+            "Select entry to delete",
+            [item["ID"] for item in inventory]
         )
 
-        if st.button(
-            "Delete Selected Entry",
-            type="secondary"
-        ):
+        if st.button("Delete Selected Entry"):
 
-            delete_inventory_item(
-                int(selected_id)
-            )
+            delete_inventory_item(int(selected_id))
 
-            st.success(
-                "Inventory entry deleted."
-            )
-
+            st.success("Entry deleted.")
             st.rerun()
 
         st.subheader("Expiry Status")
 
-        today = date.today()
-
         for item in inventory:
 
-            expiry = date.fromisoformat(
-                item["Expiry Date"]
-            )
+            expiry = date.fromisoformat(item["Expiry Date"])
 
-            if expiry < today:
+            if expiry < date.today():
+
                 st.error(
                     f"{item['Fruit']} — expired on {expiry}"
                 )
 
-            elif expiry == today:
+            elif expiry == date.today():
+
                 st.warning(
                     f"{item['Fruit']} — due today"
                 )
 
             else:
+
                 st.success(
                     f"{item['Fruit']} — expected expiry: {expiry}"
                 )
 
 
 # ============================================================
-# 16. ANALYTICS AND CSV EXPORT
+# 16. ANALYTICS
 # ============================================================
 
 elif page == "Analytics":
@@ -1129,53 +1061,47 @@ elif page == "Analytics":
     if not inventory:
 
         st.info(
-            "Add fruit entries to the inventory to view analytics."
+            "Add fruit entries to view inventory analytics."
         )
 
     else:
 
         fruit_counts = {}
 
-        total_quantity = 0
-
         for item in inventory:
 
-            fruit_name = item["Fruit"]
+            fruit = item["Fruit"]
 
-            quantity = item["Quantity"]
-
-            fruit_counts[fruit_name] = (
-                fruit_counts.get(fruit_name, 0) + quantity
+            fruit_counts[fruit] = (
+                fruit_counts.get(fruit, 0) + item["Quantity"]
             )
 
-            total_quantity += quantity
+        total_quantity = sum(fruit_counts.values())
 
         col1, col2 = st.columns(2)
 
         col1.metric(
-            "Total Inventory Quantity",
+            "Total Fruit Quantity",
             total_quantity
         )
 
         col2.metric(
-            "Number of Inventory Entries",
+            "Inventory Entries",
             len(inventory)
         )
 
         st.subheader("Fruit Quantity Distribution")
 
-        chart_data = {
-            "Fruit": list(fruit_counts.keys()),
-            "Quantity": list(fruit_counts.values())
-        }
-
         st.bar_chart(
-            chart_data,
+            {
+                "Fruit": list(fruit_counts.keys()),
+                "Quantity": list(fruit_counts.values())
+            },
             x="Fruit",
             y="Quantity"
         )
 
-        st.subheader("Inventory Data")
+        st.subheader("Inventory Records")
 
         st.dataframe(
             inventory,
@@ -1194,7 +1120,7 @@ elif page == "Analytics":
         writer.writerows(inventory)
 
         st.download_button(
-            label="Download Inventory CSV",
+            "Download Inventory CSV",
             data=csv_buffer.getvalue(),
             file_name="freshcheck_inventory.csv",
             mime="text/csv"
@@ -1220,41 +1146,71 @@ elif page == "Model Information":
         st.success("CNN model loaded successfully.")
 
         st.write("**Model file:**", str(CNN_PATH))
+
         st.write("**Input shape:**", str(cnn.input_shape))
+
         st.write("**Output shape:**", str(cnn.output_shape))
 
-        st.write("**Expected class order:**")
+        # TensorFlow version diagnostic
+        try:
+
+            import tensorflow as tf
+
+            st.write(
+                "**Deployed TensorFlow version:**",
+                tf.__version__
+            )
+
+        except Exception as error:
+
+            st.error(
+                f"Could not read TensorFlow version: {error}"
+            )
+
+        st.divider()
+
+        st.write("**Expected CNN class order:**")
 
         for index, class_name in enumerate(CLASSES):
-            st.write(f"{index}: {class_name}")
 
-        rescaling_layers = []
+            st.write(
+                f"{index} = {class_name}"
+            )
+
+        st.divider()
+
+        st.write("**CNN preprocessing layers:**")
+
+        rescaling_found = False
 
         for layer in cnn.layers:
 
             if layer.__class__.__name__ == "Rescaling":
-                rescaling_layers.append(layer)
 
-        if rescaling_layers:
+                rescaling_found = True
+
+                st.write({
+                    "layer_name": layer.name,
+                    "layer_type": layer.__class__.__name__,
+                    "configuration": layer.get_config()
+                })
+
+        if rescaling_found:
 
             st.success(
-                "Rescaling layer detected inside the CNN. "
-                "The app passes image pixels in the 0–255 range."
+                "Rescaling layer detected. The app passes "
+                "pixel values in the 0–255 range."
             )
-
-            for layer in rescaling_layers:
-                st.write(
-                    f"Layer: {layer.name} | "
-                    f"Configuration: {layer.get_config()}"
-                )
 
         else:
 
             st.warning(
-                "No top-level Rescaling layer was detected. "
-                "Check the model's training preprocessing before "
-                "changing inference scaling."
+                "No top-level Rescaling layer detected. "
+                "Do not change preprocessing until the model "
+                "configuration has been checked."
             )
+
+        st.divider()
 
         st.write("**CNN SHA256 fingerprint:**")
 
@@ -1275,11 +1231,12 @@ elif page == "Model Information":
         st.write("**Model file:**", str(RISK_PATH))
 
         st.write(
-            "**Expected input feature order:** "
-            "Fruit code, days since purchase, temperature, humidity"
+            "**Input feature order:** Fruit code, days since purchase, "
+            "temperature, humidity"
         )
 
         if hasattr(risk_model, "classes_"):
+
             st.write(
                 "**Risk model classes:**",
                 str(list(risk_model.classes_))
@@ -1291,11 +1248,7 @@ elif page == "Model Information":
 
     st.divider()
 
-    st.subheader("Deployment Checks")
-
-    st.write(
-        "Confirm that your GitHub repository contains these exact files:"
-    )
+    st.subheader("Deployment File Structure")
 
     st.code(
         """
@@ -1308,12 +1261,13 @@ FreshCheck_AI/
 └── models/
     ├── freshness_cnn.keras
     └── spoilage_risk.joblib
-        """
+        """,
+        language="text"
     )
 
     st.caption(
-        "The CNN class order in this app must match the order "
-        "used when the model was trained."
+        "The deployed CNN class order must match the class order "
+        "used during model training."
     )
 
 
@@ -1324,6 +1278,5 @@ FreshCheck_AI/
 st.divider()
 
 st.caption(
-    "FreshCheck AI | Educational prototype combining "
-    "CNN, Machine Learning, Generative AI and SQLite."
+    "FreshCheck AI | CNN + Machine Learning + Generative AI + SQLite"
 )
