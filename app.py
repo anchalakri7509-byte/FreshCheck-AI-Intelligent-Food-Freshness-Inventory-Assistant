@@ -57,37 +57,153 @@ st.set_page_config(
 )
 
 
+
 # ============================================================
-# 2. CUSTOM STYLE
+# 2. CUSTOM STYLE - FRESHCHECK AI LIGHT THEME
 # ============================================================
 
 st.markdown(
     """
     <style>
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
+
+    /* Main page background and spacing */
+    .stApp {
+        background: #fbfdfb;
     }
 
+    .block-container {
+        padding-top: 3rem;
+        padding-bottom: 3rem;
+        max-width: 1250px;
+    }
+
+    /* Main heading */
     .main-title {
-        font-size: 2.4rem;
-        font-weight: 800;
-        color: #176b45;
+        font-size: 3rem;
+        font-weight: 650;
+        color: #26734d;
+        letter-spacing: -1px;
+        line-height: 1.3;
+        padding-top: 8px;
+        padding-bottom: 5px;
     }
 
     .subtitle {
-        color: #667085;
-        font-size: 1rem;
-        margin-bottom: 1.5rem;
+        color: #667b70;
+        font-size: 1.08rem;
+        font-weight: 400;
+        line-height: 1.7;
+        margin-bottom: 2rem;
     }
 
+    /* Section headings */
+    h1 {
+        color: #286447;
+        font-weight: 650 !important;
+    }
+
+    h2 {
+        color: #345e4a;
+        font-weight: 600 !important;
+    }
+
+    h3 {
+        color: #416c57;
+        font-weight: 550 !important;
+    }
+
+    /* Feature cards */
     .info-card {
-        background: white;
-        padding: 18px;
-        border-radius: 12px;
-        border: 1px solid #e5e9ef;
+        background: linear-gradient(
+            135deg,
+            #f0faf4,
+            #ffffff
+        );
+        padding: 22px;
+        border-radius: 17px;
+        border: 1px solid #dcefe2;
+        border-left: 5px solid #81c99b;
+        margin-bottom: 16px;
+        min-height: 130px;
+        box-shadow: 0 3px 12px rgba(40, 100, 71, 0.04);
+        transition: 0.2s ease;
+    }
+
+    .info-card:hover {
+        border-color: #9bd6ad;
+        box-shadow: 0 5px 16px rgba(40, 100, 71, 0.09);
+    }
+
+    .info-card h3 {
+        color: #347653;
+        font-size: 1.35rem;
+        font-weight: 600;
+        margin-top: 0;
         margin-bottom: 12px;
     }
+
+    .info-card p {
+        color: #65766c;
+        font-size: 1rem;
+        line-height: 1.6;
+    }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: #f1f8f3;
+        border-right: 1px solid #e0eee4;
+    }
+
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3 {
+        color: #286447;
+        font-weight: 600 !important;
+    }
+
+    /* Metrics */
+    div[data-testid="stMetric"] {
+        background: #f1f9f4;
+        border: 1px solid #e0eee4;
+        border-radius: 14px;
+        padding: 16px;
+    }
+
+    div[data-testid="stMetricLabel"] {
+        color: #61786a;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #286447;
+        font-weight: 600;
+    }
+
+    /* Buttons */
+    .stButton > button {
+        background: #3d9664;
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 0.55rem 1.2rem;
+        font-weight: 500;
+    }
+
+    .stButton > button:hover {
+        background: #28794e;
+        color: white;
+        border: none;
+    }
+
+    /* Dividers */
+    hr {
+        border-color: #e4eee7;
+    }
+
+    /* Captions */
+    .stCaption {
+        color: #75877b;
+    }
+
     </style>
     """,
     unsafe_allow_html=True
@@ -543,8 +659,9 @@ st.sidebar.caption(
 )
 
 
+
 # ============================================================
-# 11. HOME
+# 11. HOME PAGE - REDESIGNED
 # ============================================================
 
 if page == "Home":
@@ -556,8 +673,8 @@ if page == "Home":
 
     st.markdown(
         '<div class="subtitle">'
-        'An intelligent fruit freshness and storage assistant '
-        'powered by Deep Learning, Machine Learning and Generative AI.'
+        'Your smart companion for fruit freshness, '
+        'food storage and intelligent inventory management.'
         '</div>',
         unsafe_allow_html=True
     )
@@ -577,46 +694,111 @@ if page == "Home":
         if expiry <= date.today():
             due_items += 1
 
+    # Dashboard metrics
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Inventory Entries", len(inventory))
-    col2.metric("Total Fruit Quantity", total_quantity)
-    col3.metric("Expired / Due Today", due_items)
+    col1.metric(
+        "📦 Inventory Entries",
+        len(inventory)
+    )
+
+    col2.metric(
+        "🍎 Total Fruit Quantity",
+        total_quantity
+    )
+
+    col3.metric(
+        "⏰ Expired / Due Today",
+        due_items
+    )
 
     st.divider()
 
     st.subheader("Explore FreshCheck AI")
 
-    col1, col2 = st.columns(2)
+    st.write(
+        "Discover the tools that help you understand and manage "
+        "fruit freshness."
+    )
 
-    with col1:
+    # Feature cards
+    card1, card2 = st.columns(2, gap="medium")
+
+    with card1:
+
         st.markdown(
             """
-            <div class="info-card">
-                <h3>📷 Freshness Scanner</h3>
-                Upload fruit images and classify their visible
-                appearance using a CNN.
-            </div>
+            <div class="info-card"
+                 style="background:linear-gradient(135deg,#eaf8ef,#ffffff);
+                        border-left-color:#65b985;">
 
-            <div class="info-card">
-                <h3>🤖 GenAI Food Assistant</h3>
-                Ask questions about fruit storage and freshness.
+                <h3>📷 Freshness Scanner</h3>
+
+                <p>
+                Upload an image of an apple, banana or orange.
+                Our CNN model analyses its visible appearance
+                and predicts its freshness category.
+                </p>
+
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    with col2:
         st.markdown(
             """
-            <div class="info-card">
-                <h3>📊 Spoilage Risk Estimator</h3>
-                Explore an ML-based risk estimate from storage inputs.
-            </div>
+            <div class="info-card"
+                 style="background:linear-gradient(135deg,#f1edff,#ffffff);
+                        border-left-color:#a18be0;">
 
-            <div class="info-card">
+                <h3>🤖 GenAI Food Assistant</h3>
+
+                <p>
+                Ask questions about food freshness, fruit storage,
+                temperature and practical food-handling tips
+                with the help of Generative AI.
+                </p>
+
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with card2:
+
+        st.markdown(
+            """
+            <div class="info-card"
+                 style="background:linear-gradient(135deg,#fff3e9,#ffffff);
+                        border-left-color:#e9aa76;">
+
+                <h3>📊 Spoilage Risk Estimator</h3>
+
+                <p>
+                Explore an ML-based spoilage-risk estimate
+                using fruit type, storage duration,
+                temperature and humidity.
+                </p>
+
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.markdown(
+            """
+            <div class="info-card"
+                 style="background:linear-gradient(135deg,#eaf4ff,#ffffff);
+                        border-left-color:#77a9df;">
+
                 <h3>📦 Fruit Inventory</h3>
-                Record purchases and monitor expiry dates.
+
+                <p>
+                Manage fruit purchases, record quantities,
+                monitor expiry dates and keep your
+                inventory organised.
+                </p>
+
             </div>
             """,
             unsafe_allow_html=True
@@ -624,15 +806,73 @@ if page == "Home":
 
     st.divider()
 
-    st.subheader("How it works")
+    st.subheader("How FreshCheck AI Works")
 
-    st.markdown(
-        """
-        1. **Deep Learning:** CNN analyses fruit images.
-        2. **Machine Learning:** Random Forest estimates a risk score.
-        3. **Generative AI:** OpenRouter answers food-storage questions.
-        4. **Database:** SQLite stores fruit inventory information.
-        """
+    step1, step2, step3 = st.columns(3)
+
+    with step1:
+
+        st.markdown(
+            """
+            <div class="info-card"
+                 style="background:#eef9f2;">
+
+                <h3>01 · Deep Learning</h3>
+
+                <p>
+                CNN-based fruit image classification
+                for visible freshness categories.
+                </p>
+
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with step2:
+
+        st.markdown(
+            """
+            <div class="info-card"
+                 style="background:#fff5ec;">
+
+                <h3>02 · Machine Learning</h3>
+
+                <p>
+                Random Forest-based risk estimation
+                from storage-related inputs.
+                </p>
+
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with step3:
+
+        st.markdown(
+            """
+            <div class="info-card"
+                 style="background:#f2efff;">
+
+                <h3>03 · Generative AI</h3>
+
+                <p>
+                AI-powered conversational assistance
+                for food storage and freshness questions.
+                </p>
+
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.divider()
+
+    st.caption(
+        "FreshCheck AI combines Deep Learning, Machine Learning, "
+        "Generative AI and SQLite to create an educational "
+        "food freshness assistant."
     )
 
 
